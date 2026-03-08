@@ -7,6 +7,11 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     curl \
+    libcairo2-dev \
+    libpango1.0-dev \
+    pkg-config \
+    python3-dev \
+    espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
@@ -28,6 +33,8 @@ RUN pip install --no-cache-dir \
     google-auth-oauthlib==1.2.1 \
     google-api-python-client==2.149.0 \
     google-auth-httplib2==0.2.0 \
-    requests==2.32.3
+    requests==2.32.3 \
+    manim==0.19.0 \
+    edge-tts==7.0.2
 
 COPY . /app

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from textwrap import dedent
-from typing import Optional
 
 import httpx
 
@@ -12,8 +11,9 @@ from app.core.config import settings
 MANIM_SYSTEM_PROMPT = (
     "You are a Manim Community Edition code generator for vertical short-form math videos. "
     "Target: 1080x1920 (portrait). Dark background (#1a1a2e). High contrast text (#e0e0ff). "
-    "Use safe layout helpers. Never use hardcoded pixel coordinates. "
-    "One scene class per logical beat. All text from approved script only."
+    "IMPORTANT: Never use MathTex or Tex — always use Text() for all text and math notation. "
+    "LaTeX is not available. Write math notation as plain Unicode strings inside Text(). "
+    "One Scene subclass per beat. Keep animations short and clear."
 )
 
 
@@ -23,11 +23,12 @@ class ManimGenerator:
         self._model = settings.ollama_model
 
     def generate_from_scene_manifest(self, title: str, scenes: list[dict]) -> str:
-        """Generate complete Manim Python file from scene manifest."""
         prompt = self._build_manim_prompt(title, scenes)
         try:
             code = self._call_ollama(prompt)
             code = self._extract_code(code)
+            # Safety: strip any MathTex / Tex usage (fallback to Text)
+            code = self._sanitize_latex(code)
             return code
         except Exception:
             return self._fallback_manim(title, scenes)
@@ -42,24 +43,24 @@ class ManimGenerator:
         Scene manifest:
         {scene_desc}
 
-        Requirements:
+        Rules (strictly follow all):
         - from manim import *
-        - Portrait frame: config.frame_width = 9, config.frame_height = 16
-        - Background color: "#1a1a2e"
-        - Text color: "#e0e0ff"
-        - Accent color: "#4fc3f7"
-        - One class per scene (HookScene, DefinitionScene, IntuitionScene, TheoremScene, PayoffScene)
-        - Use VGroup with .arrange(DOWN, buff=0.3) for layout
-        - Use .scale() to fit content, never hard-code coordinates
-        - All text comes exactly from narration field in scene manifest
-        - Each scene ends with self.wait() for timing
-        - Include a render() function at bottom:
-          def render():
-              for cls in [HookScene, DefinitionScene, IntuitionScene, TheoremScene, PayoffScene]:
-                  scene = cls()
-                  scene.render()
+        - config.frame_width = 9 and config.frame_height = 16 at the top (portrait)
+        - Background color "#1a1a2e" set in each construct() via self.camera.background_color
+        - NEVER use MathTex or Tex — ONLY use Text() for all text including math notation
+        - Write math like "f(x) = x^2" or "∑ 1/n²" directly as Text() strings
+        - One class per scene: HookScene, DefinitionScene, IntuitionScene, TheoremScene, PayoffScene
+        - Use VGroup with .arrange(DOWN, buff=0.5) for vertical stacking
+        - Call fit_to_frame(group) before adding to scene
+        - Text colors: headings "#4fc3f7", body "#e0e0ff", highlight "#ffd54f"
+        - Each scene: FadeIn, self.wait(2-4 seconds), FadeOut
+        - Output only valid Python code, no markdown fences.
 
-        Output only valid Python code, no markdown fences.
+        Include these helpers at the top after imports:
+        def fit_to_frame(mob, max_width=7.0, max_height=13.0):
+            if mob.width > max_width: mob.scale(max_width / mob.width)
+            if mob.height > max_height: mob.scale(max_height / mob.height)
+            return mob
         """).strip()
 
     def _call_ollama(self, prompt: str) -> str:
@@ -70,7 +71,7 @@ class ManimGenerator:
                 "prompt": prompt,
                 "system": MANIM_SYSTEM_PROMPT,
                 "stream": False,
-                "options": {"temperature": 0.4, "num_predict": 4096},
+                "options": {"temperature": 0.3, "num_predict": 4096},
             },
             timeout=180.0,
         )
@@ -89,50 +90,72 @@ class ManimGenerator:
             return raw[start:end].strip()
         return raw
 
+    def _sanitize_latex(self, code: str) -> str:
+        """Replace MathTex/Tex with Text to avoid LaTeX dependency."""
+        code = code.replace("MathTex(", "Text(")
+        code = code.replace("Tex(", "Text(")
+        return code
+
     def _fallback_manim(self, title: str, scenes: list[dict]) -> str:
-        """Generate a basic working Manim file when Ollama is unavailable."""
+        class_names = ["HookScene", "DefinitionScene", "IntuitionScene", "TheoremScene", "PayoffScene"]
         scene_classes = []
-        class_names = [
-            "HookScene",
-            "DefinitionScene",
-            "IntuitionScene",
-            "TheoremScene",
-            "PayoffScene",
-        ]
+
         for i, (scene, cls_name) in enumerate(zip(scenes[:5], class_names)):
-            narration = scene.get("narration", scene.get("visual_goal", f"Scene {i + 1}"))[:80]
-            # Escape any double-quotes in narration to avoid Python syntax errors
-            narration_escaped = narration.replace('"', '\\"')
-            timing = scene.get("timing", f"Scene {i + 1}")
-            scene_classes.append(
-                dedent(f'''
-                class {cls_name}(Scene):
-                    def construct(self):
-                        self.camera.background_color = "#1a1a2e"
-                        label = Text("{timing}", color="#4fc3f7").scale(0.35)
-                        content = Text("{narration_escaped}", color="#e0e0ff").scale(0.45)
-                        group = VGroup(label, content).arrange(DOWN, buff=0.4)
-                        fit_to_frame(group)
-                        keep_above_caption_zone(group)
-                        self.play(FadeIn(group))
-                        self.wait(2)
-                        self.play(FadeOut(group))
-                ''').strip()
+            narration = scene.get("narration", f"Scene {i + 1}")
+            # Split long narration into lines of ~50 chars
+            words = narration.split()
+            lines = []
+            current = []
+            for word in words:
+                current.append(word)
+                if len(" ".join(current)) > 45:
+                    lines.append(" ".join(current))
+                    current = []
+            if current:
+                lines.append(" ".join(current))
+            # Cap at 3 lines
+            lines = lines[:3]
+
+            timing = scene.get("timing", f"0:{i*12:02d}-0:{(i+1)*12:02d}")
+            safe_timing = timing.replace('"', "'")
+            safe_lines = [l.replace('"', "'") for l in lines]
+
+            text_items = "\n".join(
+                f'            Text("{l}", color=TEXT_COLOR).scale(0.42),'
+                for l in safe_lines
             )
 
-        classes_str = "\n\n".join(scene_classes)
+            scene_classes.append(dedent(f'''
+            class {cls_name}(Scene):
+                def construct(self):
+                    self.camera.background_color = BG_COLOR
+                    label = Text("{safe_timing}", color=ACCENT_COLOR).scale(0.30)
+                    body_items = [
+            {text_items}
+                    ]
+                    group = VGroup(label, *body_items).arrange(DOWN, buff=0.35)
+                    fit_to_frame(group)
+                    self.play(FadeIn(group, shift=UP * 0.3))
+                    self.wait(3)
+                    self.play(FadeOut(group))
+            ''').strip())
+
+        classes_str = "\n\n\n".join(scene_classes)
         class_list = ", ".join(class_names[: len(scenes)])
+
         return dedent(f'''
         from manim import *
+
+        config.frame_width = 9
+        config.frame_height = 16
 
         BG_COLOR = "#1a1a2e"
         TEXT_COLOR = "#e0e0ff"
         ACCENT_COLOR = "#4fc3f7"
         HIGHLIGHT_COLOR = "#ffd54f"
-        CAPTION_SAFE_BOTTOM = 0.15
 
 
-        def fit_to_frame(mob, max_width=6.5, max_height=12.0):
+        def fit_to_frame(mob, max_width=7.0, max_height=13.0):
             if mob.width > max_width:
                 mob.scale(max_width / mob.width)
             if mob.height > max_height:
@@ -140,20 +163,11 @@ class ManimGenerator:
             return mob
 
 
-        def keep_above_caption_zone(mob, frame_height=14.0):
-            min_y = -frame_height / 2 + frame_height * CAPTION_SAFE_BOTTOM + mob.height / 2
-            if mob.get_bottom()[1] < min_y:
-                mob.shift(UP * (min_y - mob.get_bottom()[1]))
-            return mob
-
-
         # Title: {title}
+
 
         {classes_str}
 
 
-        if __name__ == "__main__":
-            import subprocess
-            for cls in [{class_list}]:
-                subprocess.run(["manim", "-pql", __file__, cls.__name__])
+        ALL_SCENES = [{class_list}]
         ''').strip()

@@ -228,18 +228,18 @@ def task_run_qa(self, video_id: int) -> dict:
         )
         db.add(report)
 
-        if qa_result["passed"]:
-            job.stage = transition(job.stage, VideoStage.FINAL_REVIEW)
-        else:
-            has_errors = any(
-                i.get("severity") == "error" for i in qa_result["issues"]
-            )
-            if not has_errors:
-                job.stage = transition(job.stage, VideoStage.FINAL_REVIEW)
-            # else: remain in QA_RUNNING for manual review
+        qa_ok = qa_result["passed"] or not any(
+            i.get("severity") == "error" for i in qa_result["issues"]
+        )
 
-        job.updated_at = datetime.utcnow()
-        db.commit()
+        if qa_ok:
+            job.stage = transition(job.stage, VideoStage.RENDERING)
+            job.updated_at = datetime.utcnow()
+            db.commit()
+            task_render_video.delay(video_id)
+        else:
+            job.updated_at = datetime.utcnow()
+            db.commit()
         return {
             "job_id": video_id,
             "qa_passed": qa_result["passed"],
@@ -336,6 +336,105 @@ def task_upload_video(self, video_id: int) -> dict:
         db.commit()
 
         return {"job_id": video_id, "results": results, "stage": job.stage.value}
+    except Exception as exc:
+        db.rollback()
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.tasks.task_render_video", bind=True, max_retries=2)
+def task_render_video(self, video_id: int) -> dict:
+    """Execute Manim code and render the MP4."""
+    db = _get_db()
+    try:
+        from app.models.video_job import VideoJob, VideoStage
+        from app.core.state_machine import transition
+        from app.services.render_service import RenderService
+
+        job = db.get(VideoJob, video_id)
+        if not job or not job.manim_code:
+            return {"error": f"Video {video_id} not found or has no manim code"}
+
+        render_svc = RenderService()
+        video_path = render_svc.render(slug=job.slug, manim_code=job.manim_code)
+
+        job.preview_path = video_path
+        job.stage = transition(job.stage, VideoStage.TTS_GENERATING)
+        job.updated_at = datetime.utcnow()
+        db.commit()
+
+        # Queue TTS immediately
+        task_generate_tts.delay(video_id)
+        return {"job_id": video_id, "video_path": video_path, "stage": job.stage.value}
+    except Exception as exc:
+        db.rollback()
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.tasks.task_generate_tts", bind=True, max_retries=2)
+def task_generate_tts(self, video_id: int) -> dict:
+    """Generate TTS narration audio from the script."""
+    db = _get_db()
+    try:
+        from app.models.video_job import VideoJob, VideoStage
+        from app.core.state_machine import transition
+        from app.services.tts_service import TTSService
+
+        job = db.get(VideoJob, video_id)
+        if not job or not job.script_data:
+            return {"error": f"Video {video_id} not found or has no script"}
+
+        tts_svc = TTSService()
+        audio_path = tts_svc.synthesize(slug=job.slug, script_data=job.script_data)
+
+        # Store audio path in current_payload
+        payload = job.current_payload or {}
+        payload["audio_path"] = audio_path
+        job.current_payload = payload
+        job.stage = transition(job.stage, VideoStage.COMPOSING)
+        job.updated_at = datetime.utcnow()
+        db.commit()
+
+        # Queue composition
+        task_compose_video.delay(video_id)
+        return {"job_id": video_id, "audio_path": audio_path, "stage": job.stage.value}
+    except Exception as exc:
+        db.rollback()
+        raise self.retry(exc=exc, countdown=30)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.tasks.task_compose_video", bind=True, max_retries=2)
+def task_compose_video(self, video_id: int) -> dict:
+    """Compose final MP4 from Manim video + TTS audio + optional BGM."""
+    db = _get_db()
+    try:
+        from app.models.video_job import VideoJob, VideoStage
+        from app.core.state_machine import transition
+        from app.services.composition_service import CompositionService
+
+        job = db.get(VideoJob, video_id)
+        if not job or not job.preview_path:
+            return {"error": f"Video {video_id} not found or has no rendered video"}
+
+        audio_path = (job.current_payload or {}).get("audio_path")
+
+        comp_svc = CompositionService()
+        final_path = comp_svc.compose(
+            slug=job.slug,
+            video_path=job.preview_path,
+            audio_path=audio_path,
+        )
+
+        job.preview_path = final_path
+        job.stage = transition(job.stage, VideoStage.FINAL_REVIEW)
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        return {"job_id": video_id, "final_path": final_path, "stage": job.stage.value}
     except Exception as exc:
         db.rollback()
         raise self.retry(exc=exc, countdown=60)
