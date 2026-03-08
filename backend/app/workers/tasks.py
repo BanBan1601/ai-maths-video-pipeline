@@ -271,3 +271,73 @@ def seed_video_job() -> dict:
         return {"seeded": needed, "already_pending": count_pending}
     finally:
         db.close()
+
+
+@celery_app.task(name="app.workers.tasks.task_upload_video", bind=True, max_retries=2)
+def task_upload_video(self, video_id: int) -> dict:
+    """Upload rendered video to YouTube and/or Instagram."""
+    db = _get_db()
+    try:
+        from app.models.video_job import VideoJob, VideoStage
+        from app.core.state_machine import transition
+        from app.services.youtube_service import YouTubeService
+        from app.services.instagram_service import InstagramService
+        import os
+
+        job = db.get(VideoJob, video_id)
+        if not job:
+            return {"error": f"Video {video_id} not found"}
+
+        meta = job.platform_metadata or {}
+        results: dict = {}
+
+        yt_svc = YouTubeService()
+        ig_svc = InstagramService()
+
+        # ── YouTube ────────────────────────────────────────────────────────────
+        yt_status = yt_svc.get_status()
+        if yt_status.get("connected") and job.preview_path and os.path.exists(job.preview_path):
+            try:
+                yt_result = yt_svc.upload_video(
+                    file_path=job.preview_path,
+                    title=meta.get("youtube_title", job.title),
+                    description=meta.get("youtube_description", ""),
+                    tags=meta.get("tags", []),
+                    scheduled_at=job.scheduled_publish_at,
+                )
+                results["youtube"] = yt_result
+                meta["youtube_url"] = yt_result.get("youtube_url")
+                meta["youtube_video_id"] = yt_result.get("youtube_video_id")
+            except Exception as yt_err:
+                results["youtube_error"] = str(yt_err)
+
+        # ── Instagram ──────────────────────────────────────────────────────────
+        ig_status = ig_svc.get_status()
+        if ig_status.get("connected"):
+            # Instagram requires a public URL — derive from preview_path filename
+            if job.preview_path:
+                filename = job.preview_path.split("/")[-1]
+                public_url = f"http://localhost:8000/renders/{filename}"
+                try:
+                    ig_result = ig_svc.upload_video(
+                        video_url=public_url,
+                        caption=meta.get("instagram_caption", job.title),
+                    )
+                    results["instagram"] = ig_result
+                    meta["instagram_url"] = ig_result.get("instagram_url")
+                except Exception as ig_err:
+                    results["instagram_error"] = str(ig_err)
+
+        # ── Persist results ────────────────────────────────────────────────────
+        job.platform_metadata = meta
+        if results.get("youtube") or results.get("instagram"):
+            job.stage = transition(job.stage, VideoStage.PUBLISHED)
+        job.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {"job_id": video_id, "results": results, "stage": job.stage.value}
+    except Exception as exc:
+        db.rollback()
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()

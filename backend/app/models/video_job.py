@@ -45,5 +45,6 @@ class VideoJob(Base):
     manim_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     preview_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     platform_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    scheduled_publish_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

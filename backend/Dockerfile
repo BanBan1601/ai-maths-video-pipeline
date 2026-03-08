@@ -11,7 +11,6 @@ RUN apt-get update && apt-get install -y \
 
 COPY requirements.txt /app/requirements.txt
 
-# Install Python deps (skip manim + moviepy for faster initial build — add back for Phase 4)
 RUN pip install --no-cache-dir \
     fastapi==0.116.1 \
     uvicorn[standard]==0.35.0 \
@@ -25,6 +24,10 @@ RUN pip install --no-cache-dir \
     httpx==0.28.1 \
     python-multipart==0.0.20 \
     Pillow==11.3.0 \
-    numpy==2.1.3
+    numpy==2.1.3 \
+    google-auth-oauthlib==1.2.1 \
+    google-api-python-client==2.149.0 \
+    google-auth-httplib2==0.2.0 \
+    requests==2.32.3
 
 COPY . /app

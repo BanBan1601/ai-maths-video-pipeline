@@ -4,11 +4,14 @@ import DashboardPage from './pages/DashboardPage'
 import PipelinePage from './pages/PipelinePage'
 import VideoDetailPage from './pages/VideoDetailPage'
 import ApprovalsPage from './pages/ApprovalsPage'
+import VideoPreviewPage from './pages/VideoPreviewPage'
+import PlatformConnectPage from './pages/PlatformConnectPage'
 
 const NAV = [
-  { to: '/', label: '⬡ Dashboard', end: true },
-  { to: '/pipeline', label: '⬡ Pipeline' },
-  { to: '/approvals', label: '⬡ Approvals' },
+  { to: '/', label: '◈ Dashboard', end: true },
+  { to: '/pipeline', label: '◈ Pipeline' },
+  { to: '/approvals', label: '◈ Approvals' },
+  { to: '/platforms', label: '◈ Platforms' },
 ]
 
 const navStyle = (active) => ({
@@ -22,7 +25,6 @@ export default function App() {
   return (
     <BrowserRouter>
       <div style={{ display: 'flex', minHeight: '100vh', background: '#0f0f1a', color: '#e0e0ff', fontFamily: 'system-ui, sans-serif' }}>
-        {/* Sidebar */}
         <aside style={{ width: 220, background: '#13131f', borderRight: '1px solid #1e1e3a', padding: '24px 12px', display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
           <div style={{ padding: '8px 10px 20px', borderBottom: '1px solid #1e1e3a', marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#4fc3f7', letterSpacing: 1 }}>AI MATHS</div>
@@ -34,14 +36,14 @@ export default function App() {
             </NavLink>
           ))}
         </aside>
-
-        {/* Main */}
         <main style={{ flex: 1, overflow: 'auto', padding: 32 }}>
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/pipeline/:id" element={<VideoDetailPage />} />
+            <Route path="/preview/:id" element={<VideoPreviewPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
+            <Route path="/platforms" element={<PlatformConnectPage />} />
           </Routes>
         </main>
       </div>

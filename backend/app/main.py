@@ -1,10 +1,14 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import settings
+
+RENDERS_DIR = Path("/data/renders")
 
 
 @asynccontextmanager
@@ -31,6 +35,10 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+# Serve rendered video files at /renders/<filename>
+RENDERS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/renders", StaticFiles(directory=str(RENDERS_DIR)), name="renders")
 
 
 @app.get("/health")
